@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>수박 게임 3D 픽셀</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; overflow:hidden; }
+#c { display:block; width:100%; height:100vh; cursor:crosshair; }
+#hud { position:fixed; top:0; left:0; right:0; padding:12px 16px; display:flex; justify-content:space-between; pointer-events:none; font-family:monospace; z-index:10; }
+.hbox { background:rgba(0,0,0,0.55); border-radius:8px; padding:8px 16px; }
+.hl { font-size:10px; color:rgba(255,255,255,0.5); margin-bottom:2px; }
+.hv { font-size:24px; color:#fff; font-weight:bold; }
+.hv.sm { font-size:14px; padding-top:5px; }
+#ov { position:fixed; inset:0; background:rgba(0,0,0,0.78); display:none; flex-direction:column; align-items:center; justify-content:center; font-family:monospace; color:#fff; z-index:20; }
+#ov h2 { font-size:32px; margin-bottom:8px; }
+#ov .sub { font-size:15px; color:rgba(255,255,255,0.55); margin-bottom:24px; }
+#ov button { padding:12px 32px; background:transparent; border:1px solid rgba(255,255,255,0.4); color:#fff; font-family:monospace; font-size:14px; border-radius:6px; cursor:pointer; }
+#ov button:hover { background:rgba(255,255,255,0.1); }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+<div id="hud">
+  <div class="hbox"><div class="hl">SCORE</div><div class="hv" id="scoreEl">0</div></div>
+  <div class="hbox"><div class="hl">NEXT</div><div class="hv sm" id="nextEl">Cherry</div></div>
+</div>
+<div id="ov">
+  <h2>GAME OVER</h2>
+  <div class="sub" id="fsEl"></div>
+  <button id="rbtn">PLAY AGAIN</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ── 과일 정의 ─────────────────────────────────────────────────────
+const F = [
+  { name:'비비탄',     r:0.10, color:0xffffff },
+  { name:'멘토스',     r:0.15, color:0xfc0303 },
+  { name:'동전',      r:0.20, color:0xbf9836 },
+  { name:'골프공',     r:0.26, color:0xf0f0f0 },
+  { name:'탁구공',     r:0.30, color:0xff8800 },
+  { name:'당구공',     r:0.35, color:0xffdd00 },
+  { name:'테니스공',   r:0.41, color:0xccee22 },
+  { name:'야구공',     r:0.47, color:0xffffff },
+  { name:'사과',      r:0.54, color:0xee2211 },
+  { name:'오렌지',     r:0.61, color:0xff8822 },
+  { name:'자몽',      r:0.68, color:0xff6644 },
+  { name:'코코넛',     r:0.76, color:0x886633 },
+  { name:'수박',      r:0.85, color:0x33bb22 },
+  { name:'농구공',     r:0.95, color:0xff6600 },
+  { name:'볼링공',     r:1.06, color:0x222244 },
+  { name:'지구본',     r:1.18, color:0x2266ee },
+  { name:'호박',      r:1.32, color:0xff8800 },
+];
+
+// ── 레이아웃 상수 ─────────────────────────────────────────────────
+const BW = 6.5;
+const BBOT = -5.0, BTOP = 4.5;
+const L = -BW/2, R = BW/2;
+const DROP_Y = BTOP + 1.0, DANGER_Y = BTOP - 0.8;
+
+// ── Three.js 초기화 ───────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const W = window.innerWidth, H = window.innerHeight;
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setSize(W, H, false);
+renderer.setClearColor(0x0d0f1a, 1);
+
+const scene = new THREE.Scene();
+const camY = (BBOT + BTOP) / 2;
+const camera = new THREE.PerspectiveCamera(50, W/H, 0.1, 100);
+camera.position.set(0, camY, 14);
+camera.lookAt(0, camY, 0);
+
+// 조명
+scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+const dl = new THREE.DirectionalLight(0xffffff, 0.9);
+dl.position.set(4, 8, 10); scene.add(dl);
+
+// 박스 시각 요소
+const BH = BTOP - BBOT, WT = 0.3, wallCY = (BBOT + BTOP) / 2;
+
+function addWallMesh(w, h, d, x, y, z, op) {
+  const m = new THREE.Mesh(
+    new THREE.BoxGeometry(w, h, d),
+    new THREE.MeshPhongMaterial({ color:0x8899cc, transparent:true, opacity:op })
+  );
+  m.position.set(x,y,z); scene.add(m);
+}
+addWallMesh(WT, BH+WT, 0.4,  L-WT/2, wallCY, 0, 0.22); // 왼쪽 벽
+addWallMesh(WT, BH+WT, 0.4,  R+WT/2, wallCY, 0, 0.22); // 오른쪽 벽
+addWallMesh(BW+WT*2, WT, 0.4, 0, BBOT, 0, 0.3);         // 바닥
+
+// 박스 외곽선
+const edgeLine = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(BW, BH, 0.15)),
+  new THREE.LineBasicMaterial({ color:0x4466aa, transparent:true, opacity:0.5 })
+);
+edgeLine.position.set(0, wallCY, 0); scene.add(edgeLine);
+
+// 위험선 (빨간 선)
+scene.add(new THREE.Line(
+  new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(L, DANGER_Y, 0.2),    
+    new THREE.Vector3(R, DANGER_Y, 0.2),
+  ]),
+  new THREE.LineBasicMaterial({ color:0xff2222, transparent:true, opacity:0.55 })
+));
+
+// 드롭 가이드선 (마우스 X 위치에 따라 움직임)
+const guideGeo = new THREE.BufferGeometry().setFromPoints([
+  new THREE.Vector3(0, DROP_Y - 0.4, 0.1),
+  new THREE.Vector3(0, DANGER_Y,     0.1),
+]);
+scene.add(new THREE.Line(
+  guideGeo,
+  new THREE.LineBasicMaterial({ color:0xffffff, transparent:true, opacity:0.15 })
+));
+
+// ── 커스텀 물리 엔진 ──────────────────────────────────────────────
+// 각 과일: { id, type, x, y, vx, vy, born, mesh, popScale, merging }
+let fruits = [], idCtr = 0, mergePairs = [];
+
+const GRAVITY  = -28;   // 중력 가속도
+const BOUNCE   = 0.25;  // 벽 반발계수
+const DAMPING  = 0.993; // 속도 감쇠
+const SUBSTEPS = 8;     // 안정성을 위한 서브스텝 수
+
+function physicsStep(dt) {
+  const sub = Math.min(dt, 0.033) / SUBSTEPS;
+
+  for (let s = 0; s < SUBSTEPS; s++) {
+    // 중력 적용 + 위치 업데이트
+    fruits.forEach(f => {
+      f.vy += GRAVITY * sub;
+      f.x  += f.vx * sub;
+      f.y  += f.vy * sub;
+      f.vx *= DAMPING;
+      f.vy *= DAMPING;
+    });
+
+    // 벽 충돌
+    fruits.forEach(f => {
+      const r = F[f.type].r;
+      if (f.x - r < L)    { f.x = L + r;    f.vx =  Math.abs(f.vx) * BOUNCE; }
+      if (f.x + r > R)    { f.x = R - r;    f.vx = -Math.abs(f.vx) * BOUNCE; }
+      if (f.y - r < BBOT) { f.y = BBOT + r; f.vy =  Math.abs(f.vy) * BOUNCE; f.vx *= 0.85; }
+    });
+
+    // 과일 간 충돌 (O(n²))
+    for (let i = 0; i < fruits.length; i++) {
+      for (let j = i + 1; j < fruits.length; j++) {
+        resolveCircles(fruits[i], fruits[j]);
+      }
+    }
+  }
+}
+
+function resolveCircles(a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const dist2 = dx*dx + dy*dy;
+  const minD  = F[a.type].r + F[b.type].r;
+  if (dist2 >= minD * minD || dist2 < 1e-8) return;
+
+  const dist    = Math.sqrt(dist2);
+  const overlap = minD - dist;
+  const nx = dx / dist, ny = dy / dist;
+
+  // 질량 = 반지름² (2D 기준)
+  const mA = F[a.type].r * F[a.type].r;
+  const mB = F[b.type].r * F[b.type].r;
+  const tm = mA + mB;
+
+  // 위치 분리
+  a.x -= nx * overlap * (mB / tm);
+  a.y -= ny * overlap * (mB / tm);
+  b.x += nx * overlap * (mA / tm);
+  b.y += ny * overlap * (mA / tm);
+
+  // 충격량 계산
+  const rvx = b.vx - a.vx, rvy = b.vy - a.vy;
+  const vn  = rvx * nx + rvy * ny;
+  if (vn > 0) return; // 이미 분리 중이면 스킵
+
+  const e  = 0.28;
+  const jj = -(1 + e) * vn / (1/mA + 1/mB);
+  a.vx -= jj * nx / mA;  a.vy -= jj * ny / mA;
+  b.vx += jj * nx / mB;  b.vy += jj * ny / mB;
+
+  // 합체 조건 확인
+  const now = Date.now();
+  if (a.type === b.type &&
+      a.type < F.length - 1 &&
+      !a.merging && !b.merging &&
+      now - a.born > 500 && now - b.born > 500) {
+    a.merging = true;
+    b.merging = true;
+    mergePairs.push([a, b]);
+  }
+}
+
+function processMerges() {
+  if (!mergePairs.length) return;
+  const pairs = [...mergePairs];
+  mergePairs = [];
+  const removed = new Set();
+
+  pairs.forEach(([a, b]) => {
+    if (removed.has(a.id) || removed.has(b.id)) return;
+    removed.add(a.id); removed.add(b.id);
+
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+    rmFruit(a); rmFruit(b);
+
+    const nf = addFruit(a.type + 1, mx, my, 0, 2);
+    nf.born     = Date.now() + 600; // 합체 직후 cooldown
+    nf.popScale = 1.5;              // 팝 애니메이션
+
+    score += (a.type + 2) * 10;
+    updateHUD();
+  });
+}
+
+function addFruit(type, x, y, vx = 0, vy = 0) {
+  const id   = idCtr++;
+  const mesh = mkMesh(type);
+  mesh.position.set(x, y, 0);
+  scene.add(mesh);
+  const fr = { id, type, x, y, vx, vy, born: Date.now(), mesh, popScale: 1, merging: false };
+  fruits.push(fr);
+  return fr;
+}
+
+function rmFruit(fr) {
+  scene.remove(fr.mesh);
+  fr.mesh.geometry.dispose();
+  fr.mesh.material.dispose();
+  fruits = fruits.filter(f => f !== fr);
+}
+
+function mkMesh(type, alpha = 1) {
+  const f = F[type];
+  return new THREE.Mesh(
+    new THREE.SphereGeometry(f.r, 20, 14),
+    new THREE.MeshPhongMaterial({
+      color: f.color, emissive: f.color, emissiveIntensity: 0.2,
+      shininess: 100, specular: 0xffffff,
+      transparent: alpha < 1, opacity: alpha,
+    })
+  );
+}
+
+// ── 게임 로직 ──────────────────────────────────────────────────────
+let score = 0, curType, nxtType;
+let previewMesh = null, canDrop = true, isOver = false;
+let dangerTimer = 0, dropX = 0;
+
+const rc    = new THREE.Raycaster();
+const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+const pt    = new THREE.Vector3();
+
+function randType() { return Math.floor(Math.random() * 5); }
+
+function showPreview(sx) {
+  if (isOver) return;
+  const ndcX = (sx / W) * 2 - 1;
+  rc.setFromCamera({ x: ndcX, y: 0 }, camera);
+  rc.ray.intersectPlane(plane, pt);
+  const r = F[curType].r;
+  dropX = Math.max(L + r + 0.05, Math.min(R - r - 0.05, pt.x));
+  if (previewMesh) previewMesh.position.x = dropX;
+  // 가이드선 X 업데이트
+  const gp = guideGeo.attributes.position;
+  gp.setX(0, dropX); gp.setX(1, dropX);
+  gp.needsUpdate = true;
+}
+
+function rebuildPreview() {
+  if (previewMesh) {
+    scene.remove(previewMesh);
+    previewMesh.geometry.dispose();
+    previewMesh.material.dispose();
+  }
+  previewMesh = mkMesh(curType, 0.5);
+  previewMesh.position.set(dropX, DROP_Y, 0);
+  scene.add(previewMesh);
+}
+
+function drop() {
+  if (!canDrop || isOver) return;
+  addFruit(curType, dropX, DROP_Y, 0, -1);
+  curType = nxtType;
+  nxtType = randType();
+  rebuildPreview();
+  updateHUD();
+  canDrop = false;
+  setTimeout(() => { if (!isOver) canDrop = true; }, 10);
+}
+
+function updateHUD() {
+  document.getElementById('scoreEl').textContent = score;
+  document.getElementById('nextEl').textContent  = F[nxtType].name;
+}
+
+function triggerGameOver() {
+  isOver = true; canDrop = false;
+  if (previewMesh) { scene.remove(previewMesh); previewMesh = null; }
+  document.getElementById('fsEl').textContent = 'Score: ' + score;
+  document.getElementById('ov').style.display = 'flex';
+}
+
+function restart() {
+  fruits.forEach(fr => { scene.remove(fr.mesh); });
+  fruits = []; mergePairs = [];
+  score = 0; isOver = false; dangerTimer = 0; canDrop = true; dropX = 0;
+  curType = randType(); nxtType = randType();
+  rebuildPreview(); updateHUD();
+  document.getElementById('ov').style.display = 'none';
+}
+
+// 입력 이벤트
+canvas.addEventListener('mousemove', e => showPreview(e.clientX));
+canvas.addEventListener('click', drop);
+canvas.addEventListener('touchmove', e => { showPreview(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
+canvas.addEventListener('touchend',  e => { showPreview(e.changedTouches[0].clientX); drop(); e.preventDefault(); }, { passive: false });
+document.getElementById('rbtn').addEventListener('click', restart);
+
+// ── 픽셀 포스트프로세싱 (size=4, square, gap=0) ──────────────────
+const rt       = new THREE.WebGLRenderTarget(W, H, { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
+const postScene = new THREE.Scene();
+const postCam   = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+postScene.add(new THREE.Mesh(
+  new THREE.PlaneGeometry(2, 2),
+  new THREE.ShaderMaterial({
+    uniforms: {
+      tDiffuse: { value: rt.texture },
+      res:      { value: new THREE.Vector2(W, H) },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = vec4(position, 1.0); }
+    `,
+    fragmentShader: `
+      uniform sampler2D tDiffuse;
+      uniform vec2 res;
+      varying vec2 vUv;
+      void main() {
+        vec2 s = 2.0 / res;
+        gl_FragColor = texture2D(tDiffuse, s * (floor(vUv / s) + 0.5));
+      }
+    `,
+  })
+));
+
+// ── 초기화 ────────────────────────────────────────────────────────
+curType = randType(); nxtType = randType();
+rebuildPreview(); updateHUD();
+
+// ── 메인 루프 ─────────────────────────────────────────────────────
+let lastT = performance.now();
+
+(function loop() {
+  requestAnimationFrame(loop);
+  const now = performance.now();
+  const dt  = Math.min((now - lastT) / 1000, 0.05);
+  lastT = now;
+
+  if (!isOver) {
+    // 물리 업데이트
+    physicsStep(dt);
+    processMerges();
+
+    // Three.js 메시 동기화 + 팝 애니메이션
+    fruits.forEach(fr => {
+      fr.mesh.position.set(fr.x, fr.y, 0);
+      if (fr.popScale > 1.001) {
+        fr.popScale = fr.popScale * 0.80 + 1 * 0.20;
+        fr.mesh.scale.setScalar(fr.popScale);
+      } else {
+        fr.popScale = 1;
+        fr.mesh.scale.setScalar(1);
+      }
+    });
+
+    // 게임오버 체크: 위험선 위로 과일이 2.5초 이상 있으면 종료
+    const danger = fruits.some(f => f.y + F[f.type].r > DANGER_Y && Date.now() - f.born > 1200);
+    if (danger) { dangerTimer += dt; if (dangerTimer > 2.5) triggerGameOver(); }
+    else dangerTimer = 0;
+  }
+
+  // 프리뷰 과일 상하 bob
+  if (previewMesh) previewMesh.position.y = DROP_Y + Math.sin(now * 0.003) * 0.1;
+
+  // 1패스: 씬 → 렌더 타겟
+  renderer.setRenderTarget(rt);
+  renderer.render(scene, camera);
+
+  // 2패스: 픽셀화 → 화면
+  renderer.setRenderTarget(null);
+  renderer.render(postScene, postCam);
+})();
+</script>
+</body>
+</html>
